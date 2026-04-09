@@ -1,11 +1,11 @@
 use std::ffi::OsString;
 use std::io;
 
-use crate::SESSION_NAME;
-use crate::model::{CommandSpec, CreateTarget, IntmuxError, RunOptions, parse_create_target};
+use crate::model::{CommandSpec, IntmuxError, RunOptions};
 use crate::reuse::{REUSE_WINDOW_OPTION, ReuseKey};
 use crate::tmux::process::{ProcessOutput, TmuxRunner};
 use crate::tmux::sticky::ReuseResolution;
+use crate::tmux_target::{CreateTarget, parse_create_target};
 
 pub(crate) struct TmuxClient<'runner, R> {
     options: &'runner RunOptions,
@@ -15,6 +15,10 @@ pub(crate) struct TmuxClient<'runner, R> {
 impl<'runner, R: TmuxRunner> TmuxClient<'runner, R> {
     pub(crate) fn new(runner: &'runner mut R, options: &'runner RunOptions) -> Self {
         Self { options, runner }
+    }
+
+    pub(super) fn session_name(&self) -> &str {
+        self.options.session_name()
     }
 
     pub(crate) fn launch(&mut self, spec: &CommandSpec) -> Result<(), IntmuxError> {
@@ -102,7 +106,7 @@ impl<'runner, R: TmuxRunner> TmuxClient<'runner, R> {
             &[
                 OsString::from("has-session"),
                 OsString::from("-t"),
-                OsString::from(SESSION_NAME.as_str()),
+                OsString::from(self.session_name()),
             ],
         )?;
 
@@ -126,7 +130,7 @@ impl<'runner, R: TmuxRunner> TmuxClient<'runner, R> {
                 OsString::from("-F"),
                 OsString::from("#{window_id}\t#{pane_id}"),
                 OsString::from("-s"),
-                OsString::from(SESSION_NAME.as_str()),
+                OsString::from(self.session_name()),
                 OsString::from("-n"),
                 OsString::from(spec.window_name()),
                 OsString::from("-c"),
@@ -146,7 +150,7 @@ impl<'runner, R: TmuxRunner> TmuxClient<'runner, R> {
                 OsString::from("-F"),
                 OsString::from("#{window_id}\t#{pane_id}"),
                 OsString::from("-t"),
-                OsString::from(SESSION_NAME.as_str()),
+                OsString::from(self.session_name()),
                 OsString::from("-n"),
                 OsString::from(spec.window_name()),
                 OsString::from("-c"),

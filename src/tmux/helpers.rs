@@ -3,12 +3,12 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-use crate::SESSION_NAME;
-use crate::model::{CommandSpec, IntmuxError, WindowId, shell_join, shell_quote};
+use crate::model::{CommandSpec, IntmuxError, shell_quote};
 use crate::reuse::{REUSE_WINDOW_OPTION, ReuseKey};
 use crate::tmux::client::TmuxClient;
 use crate::tmux::process::TmuxRunner;
 use crate::tmux::sticky::{ReuseResolution, StickyWindow};
+use crate::tmux_target::WindowId;
 
 impl<R: TmuxRunner> TmuxClient<'_, R> {
     pub(super) fn clear_stale_matches(
@@ -52,7 +52,7 @@ impl<R: TmuxRunner> TmuxClient<'_, R> {
             &[
                 OsString::from("list-windows"),
                 OsString::from("-t"),
-                OsString::from(SESSION_NAME.as_str()),
+                OsString::from(self.session_name()),
                 OsString::from("-f"),
                 OsString::from(format!(
                     "#{{==:#{{{REUSE_WINDOW_OPTION}}},{}}}",
@@ -123,7 +123,7 @@ impl<R: TmuxRunner> TmuxClient<'_, R> {
         pane_id: &str,
         spec: &CommandSpec,
     ) -> Result<(), IntmuxError> {
-        let command_line = shell_join(spec.argv());
+        let command_line = spec.rendered_command_line();
         self.send_literal(pane_id, &command_line, "send command to tmux shell")?;
         self.send_key(pane_id, "C-m", "execute command in tmux shell")
     }

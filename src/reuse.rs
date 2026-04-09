@@ -4,7 +4,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-use crate::model::CommandSpec;
+use crate::model::{CommandInput, CommandSpec};
 
 pub(crate) const REUSE_WINDOW_OPTION: &str = "@intmux.reuse-key-sha256";
 
@@ -13,7 +13,12 @@ pub(crate) struct ReuseKey(String);
 
 impl ReuseKey {
     pub(crate) fn from_command_spec(spec: &CommandSpec) -> Self {
-        Self(compute_reuse_key(spec.cwd(), spec.argv()))
+        match spec.command_input() {
+            CommandInput::Argv(argv) => Self(compute_reuse_key(spec.cwd(), argv)),
+            CommandInput::Shell(command_line) => {
+                Self(compute_shell_command_reuse_key(spec.cwd(), command_line))
+            }
+        }
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -23,12 +28,23 @@ impl ReuseKey {
 
 pub(crate) fn compute_reuse_key(cwd: &Path, argv: &[std::ffi::OsString]) -> String {
     let mut hasher = Sha256::new();
+    hasher.update(b"argv");
     update_with_os_bytes(&mut hasher, cwd.as_os_str());
     hasher.update([0_u8]);
     for argument in argv {
         update_with_os_bytes(&mut hasher, argument.as_os_str());
         hasher.update([0_u8]);
     }
+    hex_encode(hasher.finalize().as_slice())
+}
+
+pub(crate) fn compute_shell_command_reuse_key(cwd: &Path, command_line: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"shell");
+    update_with_os_bytes(&mut hasher, cwd.as_os_str());
+    hasher.update([0_u8]);
+    hasher.update(command_line.as_bytes());
+    hasher.update([0_u8]);
     hex_encode(hasher.finalize().as_slice())
 }
 

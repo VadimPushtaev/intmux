@@ -1,5 +1,4 @@
 use std::ffi::{OsStr, OsString};
-use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -9,6 +8,7 @@ use thiserror::Error;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RunOptions {
     reuse_window: bool,
+    session_name: Option<SessionName>,
     socket_name: Option<SocketName>,
 }
 
@@ -27,6 +27,15 @@ impl RunOptions {
         })
     }
 
+    /// Creates options that use a specific tmux session name.
+    pub fn with_session_name(
+        mut self,
+        session_name: impl Into<String>,
+    ) -> Result<Self, ConfigError> {
+        self.session_name = Some(SessionName::new(session_name.into())?);
+        Ok(self)
+    }
+
     /// Enables reuse of a previously tagged tmux window for the same command and working directory.
     #[must_use]
     pub fn with_reuse_window(mut self) -> Self {
@@ -38,8 +47,19 @@ impl RunOptions {
         self.reuse_window
     }
 
+    pub(crate) fn session_name(&self) -> &str {
+        self.session_name
+            .as_ref()
+            .map_or(SessionName::default_name(), SessionName::as_str)
+    }
+
     pub(crate) fn socket_name(&self) -> Option<&str> {
         self.socket_name.as_ref().map(SocketName::as_str)
+    }
+
+    pub(crate) fn with_validated_session_name(mut self, session_name: SessionName) -> Self {
+        self.session_name = Some(session_name);
+        self
     }
 }
 
@@ -47,6 +67,12 @@ impl RunOptions {
 #[non_exhaustive]
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum ConfigError {
+    /// The tmux session name was empty.
+    #[error("tmux session name cannot be empty")]
+    EmptySessionName,
+    /// The tmux session name contained ':' which breaks tmux target parsing.
+    #[error("tmux session name must not contain ':'")]
+    SessionNameContainsColon,
     /// The tmux socket name was empty.
     #[error("tmux socket name cannot be empty")]
     EmptySocketName,
@@ -100,7 +126,7 @@ pub enum IntmuxError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CommandSpec {
-    argv: Vec<OsString>,
+    command: CommandInputOwned,
     cwd: PathBuf,
     window_name: String,
 }
@@ -122,16 +148,44 @@ impl CommandSpec {
                 "command executable must not be empty",
             ));
         }
+        let window_name = derive_window_name(executable);
 
         Ok(Self {
-            window_name: derive_window_name(executable),
-            argv,
+            command: CommandInputOwned::Argv(argv),
+            window_name,
             cwd,
         })
     }
 
-    pub(crate) fn argv(&self) -> &[OsString] {
-        &self.argv
+    pub(crate) fn from_shell_command(
+        command_line: String,
+        cwd: PathBuf,
+    ) -> Result<Self, IntmuxError> {
+        if command_line.trim().is_empty() {
+            return Err(IntmuxError::InvalidCommand(
+                "shell command must not be empty",
+            ));
+        }
+
+        Ok(Self {
+            window_name: derive_shell_window_name(&command_line),
+            command: CommandInputOwned::Shell(command_line),
+            cwd,
+        })
+    }
+
+    pub(crate) fn command_input(&self) -> CommandInput<'_> {
+        match &self.command {
+            CommandInputOwned::Argv(argv) => CommandInput::Argv(argv),
+            CommandInputOwned::Shell(command_line) => CommandInput::Shell(command_line),
+        }
+    }
+
+    pub(crate) fn rendered_command_line(&self) -> String {
+        match self.command_input() {
+            CommandInput::Argv(argv) => shell_join(argv),
+            CommandInput::Shell(command_line) => String::from(command_line),
+        }
     }
 
     pub(crate) fn cwd(&self) -> &Path {
@@ -141,6 +195,17 @@ impl CommandSpec {
     pub(crate) fn window_name(&self) -> &str {
         &self.window_name
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CommandInputOwned {
+    Argv(Vec<OsString>),
+    Shell(String),
+}
+
+pub(crate) enum CommandInput<'a> {
+    Argv(&'a [OsString]),
+    Shell(&'a str),
 }
 
 fn derive_window_name(command: &OsStr) -> String {
@@ -155,12 +220,33 @@ fn derive_window_name(command: &OsStr) -> String {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SessionName(pub(crate) &'static str);
+fn derive_shell_window_name(command_line: &str) -> String {
+    let Some(first_word) = command_line.split_whitespace().next() else {
+        return String::from("shell");
+    };
+    derive_window_name(OsStr::new(first_word))
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SessionName(String);
 
 impl SessionName {
-    pub(crate) const fn as_str(self) -> &'static str {
-        self.0
+    pub(crate) fn new(session_name: String) -> Result<Self, ConfigError> {
+        if session_name.is_empty() {
+            return Err(ConfigError::EmptySessionName);
+        }
+        if session_name.contains(':') {
+            return Err(ConfigError::SessionNameContainsColon);
+        }
+        Ok(Self(session_name))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) const fn default_name() -> &'static str {
+        "intmux"
     }
 }
 
@@ -181,107 +267,6 @@ impl SocketName {
     fn as_str(&self) -> &str {
         &self.0
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct WindowId(String);
-
-impl WindowId {
-    pub(crate) fn parse(raw: &str) -> Result<Self, IntmuxError> {
-        parse_tmux_id(raw, '@', "window id").map(Self)
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for WindowId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct PaneId(String);
-
-impl PaneId {
-    pub(crate) fn parse(raw: &str) -> Result<Self, IntmuxError> {
-        parse_tmux_id(raw, '%', "pane id").map(Self)
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for PaneId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CreateTarget {
-    pane_id: PaneId,
-    window_id: WindowId,
-}
-
-impl CreateTarget {
-    pub(crate) fn new(pane_id: PaneId, window_id: WindowId) -> Self {
-        Self { pane_id, window_id }
-    }
-
-    pub(crate) fn pane_id(&self) -> &PaneId {
-        &self.pane_id
-    }
-
-    pub(crate) fn window_id(&self) -> &WindowId {
-        &self.window_id
-    }
-}
-
-fn parse_tmux_id(raw: &str, prefix: char, label: &'static str) -> Result<String, IntmuxError> {
-    let mut chars = raw.chars();
-    let Some(head) = chars.next() else {
-        return Err(IntmuxError::UnexpectedTmuxOutput {
-            context: "parse tmux identifiers",
-            details: format!("missing {label}"),
-        });
-    };
-    if head != prefix || !chars.all(|character| character.is_ascii_digit()) {
-        return Err(IntmuxError::UnexpectedTmuxOutput {
-            context: "parse tmux identifiers",
-            details: format!("invalid {label}: {raw:?}"),
-        });
-    }
-    Ok(String::from(raw))
-}
-
-pub(crate) fn parse_create_target(
-    output: &str,
-    context: &'static str,
-) -> Result<CreateTarget, IntmuxError> {
-    let mut parts = output.split('\t');
-    let window_id = parts.next().ok_or(IntmuxError::UnexpectedTmuxOutput {
-        context,
-        details: String::from("missing window id"),
-    })?;
-    let pane_id = parts.next().ok_or(IntmuxError::UnexpectedTmuxOutput {
-        context,
-        details: String::from("missing pane id"),
-    })?;
-    if parts.next().is_some() {
-        return Err(IntmuxError::UnexpectedTmuxOutput {
-            context,
-            details: format!("expected two tab-separated fields, got {output:?}"),
-        });
-    }
-
-    Ok(CreateTarget {
-        pane_id: PaneId::parse(pane_id)?,
-        window_id: WindowId::parse(window_id)?,
-    })
 }
 
 pub(crate) fn shell_quote(argument: &OsStr) -> String {

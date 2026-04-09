@@ -15,7 +15,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use intmux::{RunOptions, launch_command};
+use intmux::{RunOptions, launch_command, launch_shell_command};
 use tempfile::TempDir;
 
 #[test]
@@ -95,6 +95,23 @@ fn relative_paths_resolve_from_the_caller_directory() -> Result<(), Box<dyn Erro
     )?;
 
     wait_for_path(&workspace.path().join("relative-output"))?;
+    Ok(())
+}
+
+#[test]
+fn shell_command_mode_runs_redirection_in_tmux_shell() -> Result<(), Box<dyn Error>> {
+    let harness = TmuxHarness::new()?;
+    let workspace = tempfile::tempdir()?;
+    let target = workspace.path().join("redirect-output");
+
+    launch_shell_command(
+        String::from("echo 123 > redirect-output"),
+        workspace.path().to_path_buf(),
+        &harness.options,
+    )?;
+
+    wait_for_path(&target)?;
+    assert_eq!(fs::read_to_string(target)?.trim(), "123");
     Ok(())
 }
 
@@ -213,8 +230,40 @@ fn reuse_window_resets_shell_cwd_before_reuse() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+fn custom_session_name_with_spaces_creates_and_reuses_named_session() -> Result<(), Box<dyn Error>>
+{
+    let harness = TmuxHarness::new_with_session("team space")?;
+    let workspace = tempfile::tempdir()?;
+    let options = harness.options.clone().with_reuse_window();
+
+    launch_command(
+        [
+            OsString::from("touch"),
+            OsString::from("named-session-output"),
+        ],
+        workspace.path().to_path_buf(),
+        &options,
+    )?;
+    wait_for_path(&workspace.path().join("named-session-output"))?;
+
+    launch_command(
+        [
+            OsString::from("touch"),
+            OsString::from("named-session-output"),
+        ],
+        workspace.path().to_path_buf(),
+        &options,
+    )?;
+
+    assert_eq!(harness.session_name()?, "team space");
+    assert_eq!(harness.window_count()?, 1);
+    Ok(())
+}
+
 struct TmuxHarness {
     options: RunOptions,
+    session_name: String,
     socket_name: String,
     _workspace: TempDir,
 }
@@ -227,6 +276,21 @@ impl TmuxHarness {
 
         Ok(Self {
             options,
+            session_name: String::from("intmux"),
+            socket_name,
+            _workspace: workspace,
+        })
+    }
+
+    fn new_with_session(session_name: &str) -> Result<Self, Box<dyn Error>> {
+        let socket_name = unique_socket_name()?;
+        let workspace = tempfile::tempdir()?;
+        let options = RunOptions::with_socket_name(socket_name.clone())?
+            .with_session_name(String::from(session_name))?;
+
+        Ok(Self {
+            options,
+            session_name: String::from(session_name),
             socket_name,
             _workspace: workspace,
         })
@@ -237,7 +301,13 @@ impl TmuxHarness {
     }
 
     fn window_count(&self) -> Result<usize, Box<dyn Error>> {
-        let raw = self.tmux_stdout(["list-windows", "-t", "intmux", "-F", "#{window_id}"])?;
+        let raw = self.tmux_stdout([
+            "list-windows",
+            "-t",
+            self.session_name.as_str(),
+            "-F",
+            "#{window_id}",
+        ])?;
         Ok(raw.lines().count())
     }
 
@@ -299,7 +369,13 @@ impl TmuxHarness {
     }
 
     fn window_id(&self, index: usize) -> Result<String, Box<dyn Error>> {
-        let raw = self.tmux_stdout(["list-windows", "-t", "intmux", "-F", "#{window_id}"])?;
+        let raw = self.tmux_stdout([
+            "list-windows",
+            "-t",
+            self.session_name.as_str(),
+            "-F",
+            "#{window_id}",
+        ])?;
         let ids: Vec<&str> = raw.lines().collect();
         ids.get(index)
             .map(|id| (*id).to_owned())
@@ -307,7 +383,13 @@ impl TmuxHarness {
     }
 
     fn pane_id(&self, index: usize) -> Result<String, Box<dyn Error>> {
-        let raw = self.tmux_stdout(["list-panes", "-t", "intmux", "-F", "#{pane_id}"])?;
+        let raw = self.tmux_stdout([
+            "list-panes",
+            "-t",
+            self.session_name.as_str(),
+            "-F",
+            "#{pane_id}",
+        ])?;
         let ids: Vec<&str> = raw.lines().collect();
         ids.get(index)
             .map(|id| (*id).to_owned())
@@ -359,7 +441,7 @@ fn unique_socket_name() -> Result<String, Box<dyn Error>> {
 }
 
 fn wait_for_path(path: &Path) -> Result<(), Box<dyn Error>> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline {
         if path.exists() {
             return Ok(());

@@ -1,4 +1,5 @@
-use crate::model::{CreateTarget, IntmuxError, PaneId, WindowId};
+use crate::model::IntmuxError;
+use crate::tmux_target::{CreateTarget, PaneId, WindowId};
 
 pub(super) enum ReuseResolution {
     Create(Vec<WindowId>),

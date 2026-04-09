@@ -46,6 +46,40 @@ fn cli_accepts_reuse_window_flag() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn cli_accepts_shell_command_flag() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::try_parse_from(["intmux", "-c", "echo 123 > /tmp/file"])?;
+    assert_eq!(cli.shell_command.as_deref(), Some("echo 123 > /tmp/file"));
+    assert!(cli.command.is_empty());
+    Ok(())
+}
+
+#[test]
+fn cli_rejects_shell_command_mixed_with_argv_command() {
+    let result = Cli::try_parse_from(["intmux", "-c", "echo 123", "ls"]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn cli_accepts_custom_session_flag() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::try_parse_from(["intmux", "--session", "team space", "ls", "/tmp"])?;
+    assert_eq!(
+        cli.session.as_ref().map(SessionName::as_str),
+        Some("team space")
+    );
+    assert_eq!(
+        cli.command,
+        vec![OsString::from("ls"), OsString::from("/tmp")]
+    );
+    Ok(())
+}
+
+#[test]
+fn cli_rejects_invalid_session_names() {
+    let result = Cli::try_parse_from(["intmux", "--session", "bad:name", "ls"]);
+    assert!(result.is_err());
+}
+
+#[test]
 fn run_options_validate_socket_names() {
     assert_eq!(
         RunOptions::with_socket_name(String::new()),
@@ -58,6 +92,34 @@ fn run_options_validate_socket_names() {
 }
 
 #[test]
+fn run_options_validate_session_names() {
+    assert_eq!(
+        RunOptions::new().with_session_name(String::new()),
+        Err(ConfigError::EmptySessionName)
+    );
+    assert_eq!(
+        RunOptions::new().with_session_name(String::from("bad:name")),
+        Err(ConfigError::SessionNameContainsColon)
+    );
+    assert_eq!(
+        RunOptions::new()
+            .with_session_name(String::from("team space"))
+            .map(|options| String::from(options.session_name())),
+        Ok(String::from("team space"))
+    );
+}
+
+#[test]
+fn merge_run_options_prefers_cli_session_name() -> Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::try_parse_from(["intmux", "--session", "cli-name", "ls"])?;
+    let options = RunOptions::new().with_session_name(String::from("base-name"))?;
+    let merged = merge_run_options(&cli, &options);
+
+    assert_eq!(merged.session_name(), "cli-name");
+    Ok(())
+}
+
+#[test]
 fn compute_reuse_key_changes_with_working_directory() {
     let argv = vec![OsString::from("touch"), OsString::from("target-file")];
     let first = compute_reuse_key(PathBuf::from("/one").as_path(), &argv);
@@ -66,8 +128,24 @@ fn compute_reuse_key_changes_with_working_directory() {
 }
 
 #[test]
+fn shell_command_reuse_key_differs_from_argv_reuse_key() {
+    let argv = vec![OsString::from("echo"), OsString::from("123")];
+    let cwd = PathBuf::from("/one");
+    let argv_key = compute_reuse_key(cwd.as_path(), &argv);
+    let shell_key = compute_shell_command_reuse_key(cwd.as_path(), "echo 123");
+
+    assert_ne!(argv_key, shell_key);
+}
+
+#[test]
 fn command_spec_rejects_empty_commands() {
     let result = CommandSpec::new(Vec::<OsString>::new(), PathBuf::from("/tmp"));
+    assert!(matches!(result, Err(IntmuxError::InvalidCommand(_))));
+}
+
+#[test]
+fn shell_command_spec_rejects_empty_commands() {
+    let result = CommandSpec::from_shell_command(String::from("   "), PathBuf::from("/tmp"));
     assert!(matches!(result, Err(IntmuxError::InvalidCommand(_))));
 }
 
@@ -78,6 +156,17 @@ fn command_spec_derives_window_name_from_basename() -> Result<(), Box<dyn std::e
         PathBuf::from("/tmp"),
     )?;
     assert_eq!(spec.window_name(), "printf");
+    Ok(())
+}
+
+#[test]
+fn shell_command_spec_uses_literal_command_line() -> Result<(), Box<dyn std::error::Error>> {
+    let spec = CommandSpec::from_shell_command(
+        String::from("echo 123 > relative-output"),
+        PathBuf::from("/tmp"),
+    )?;
+    assert_eq!(spec.window_name(), "echo");
+    assert_eq!(spec.rendered_command_line(), "echo 123 > relative-output");
     Ok(())
 }
 

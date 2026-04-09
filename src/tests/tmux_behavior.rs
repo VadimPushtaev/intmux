@@ -142,3 +142,50 @@ fn wait_for_live_pane_retries_until_shell_is_ready() -> Result<(), Box<dyn std::
     );
     Ok(())
 }
+
+#[test]
+fn custom_session_name_is_used_for_tmux_targets() -> Result<(), Box<dyn std::error::Error>> {
+    let spec = CommandSpec::new([OsString::from("ls")], PathBuf::from("/work"))?;
+    let options = RunOptions::with_socket_name(String::from("test-socket"))?
+        .with_session_name(String::from("team space"))?;
+    let mut runner = FakeRunner::new(vec![
+        Ok(failure(1, "can't find session: team space")),
+        Ok(success("@1\t%2\n")),
+        Ok(success("")),
+        Ok(success("0\tbash")),
+        Ok(success("ls")),
+        Ok(success("")),
+    ]);
+
+    launch_with_runner(&mut runner, &spec, &options)?;
+
+    assert_eq!(runner.calls[0][4], OsString::from("team space"));
+    assert_eq!(runner.calls[1][8], OsString::from("team space"));
+    Ok(())
+}
+
+#[test]
+fn shell_command_is_sent_without_requoting() -> Result<(), Box<dyn std::error::Error>> {
+    let spec = CommandSpec::from_shell_command(
+        String::from("echo 123 > relative-output"),
+        PathBuf::from("/work"),
+    )?;
+    let options = RunOptions::with_socket_name(String::from("test-socket"))?;
+    let mut runner = FakeRunner::new(vec![
+        Ok(failure(1, "can't find session: intmux")),
+        Ok(success("@1\t%2\n")),
+        Ok(success("")),
+        Ok(success("0\tbash")),
+        Ok(success("echo 123 > relative-output")),
+        Ok(success("")),
+    ]);
+
+    launch_with_runner(&mut runner, &spec, &options)?;
+
+    assert_eq!(runner.calls[1][10], OsString::from("echo"));
+    assert_eq!(
+        runner.calls[4][6],
+        OsString::from("echo 123 > relative-output")
+    );
+    Ok(())
+}

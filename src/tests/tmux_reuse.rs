@@ -5,11 +5,9 @@ use super::*;
 
 #[test]
 fn reuse_window_uses_matching_live_shell() -> Result<(), Box<dyn std::error::Error>> {
-    let spec = CommandSpec::new(
-        [OsString::from("touch"), OsString::from("file with spaces")],
-        PathBuf::from("/work"),
-    )?;
-    let reuse_key = compute_reuse_key(spec.cwd(), spec.argv());
+    let argv = [OsString::from("touch"), OsString::from("file with spaces")];
+    let spec = CommandSpec::new(argv.iter().cloned(), PathBuf::from("/work"))?;
+    let reuse_key = compute_reuse_key(spec.cwd(), &argv);
     let options = RunOptions::with_socket_name(String::from("test-socket"))?.with_reuse_window();
     let filter = format!("#{{==:#{{@intmux.reuse-key-sha256}},{reuse_key}}}");
     let mut runner = FakeRunner::new(vec![
@@ -35,11 +33,9 @@ fn reuse_window_uses_matching_live_shell() -> Result<(), Box<dyn std::error::Err
 #[test]
 fn reuse_window_falls_back_to_new_window_for_busy_match() -> Result<(), Box<dyn std::error::Error>>
 {
-    let spec = CommandSpec::new(
-        [OsString::from("ls"), OsString::from("/tmp")],
-        PathBuf::from("/work"),
-    )?;
-    let reuse_key = compute_reuse_key(spec.cwd(), spec.argv());
+    let argv = [OsString::from("ls"), OsString::from("/tmp")];
+    let spec = CommandSpec::new(argv.iter().cloned(), PathBuf::from("/work"))?;
+    let reuse_key = compute_reuse_key(spec.cwd(), &argv);
     let options = RunOptions::with_socket_name(String::from("test-socket"))?.with_reuse_window();
     let filter = format!("#{{==:#{{@intmux.reuse-key-sha256}},{reuse_key}}}");
     let mut runner = FakeRunner::new(vec![
@@ -66,6 +62,36 @@ fn reuse_window_falls_back_to_new_window_for_busy_match() -> Result<(), Box<dyn 
         OsString::from("@intmux.reuse-key-sha256")
     );
     assert_eq!(runner.calls[8][6], OsString::from("ls /tmp"));
+    Ok(())
+}
+
+#[test]
+fn reuse_window_uses_custom_session_for_lookup() -> Result<(), Box<dyn std::error::Error>> {
+    let argv = [OsString::from("ls")];
+    let spec = CommandSpec::new(argv.iter().cloned(), PathBuf::from("/work"))?;
+    let options = RunOptions::with_socket_name(String::from("test-socket"))?
+        .with_session_name(String::from("team space"))?
+        .with_reuse_window();
+    let reuse_key = compute_reuse_key(spec.cwd(), &argv);
+    let filter = format!("#{{==:#{{@intmux.reuse-key-sha256}},{reuse_key}}}");
+    let mut runner = FakeRunner::new(vec![
+        Ok(success("")),
+        Ok(success("@4\t1\t1\t%9\t0\tbash")),
+        Ok(success("/bin/bash")),
+        Ok(success("")),
+        Ok(success("")),
+        Ok(success("")),
+        Ok(success("")),
+        Ok(success("")),
+        Ok(success("")),
+        Ok(success("")),
+    ]);
+
+    launch_with_runner(&mut runner, &spec, &options)?;
+
+    assert_eq!(runner.calls[0][4], OsString::from("team space"));
+    assert_eq!(runner.calls[1][4], OsString::from("team space"));
+    assert_eq!(runner.calls[1][6], OsString::from(filter));
     Ok(())
 }
 
