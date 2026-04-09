@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+if command -v cargo >/dev/null 2>&1; then
+  cargo_bin="cargo"
+elif [[ -x "$HOME/.cargo/bin/cargo" ]]; then
+  cargo_bin="$HOME/.cargo/bin/cargo"
+else
+  echo "cargo not found on PATH and \$HOME/.cargo/bin/cargo does not exist" >&2
+  exit 1
+fi
+
+echo "+ $cargo_bin fmt --check"
+"$cargo_bin" fmt --check
+
+echo "+ $cargo_bin clippy --all-targets --all-features -- -D warnings"
+"$cargo_bin" clippy --all-targets --all-features -- -D warnings
+
+echo "+ $cargo_bin test"
+"$cargo_bin" test
