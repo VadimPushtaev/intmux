@@ -16,16 +16,25 @@ tempfile = "3.20.0"
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "deny"
+missing_debug_implementations = "deny"
 rust_2018_idioms = { level = "deny", priority = -1 }
+unreachable_pub = "deny"
 unused_lifetimes = "deny"
 unused_qualifications = "deny"
+
+[lints.rustdoc]
+bare_urls = "deny"
+broken_intra_doc_links = "deny"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 unwrap_used = "deny"
+cognitive_complexity = "deny"
+too_many_arguments = "deny"
+too_many_lines = "deny"
+type_complexity = "deny"
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 similar_names = "allow"
-too_many_lines = "allow"

@@ -14,10 +14,16 @@ else
 fi
 
 echo "+ $cargo_bin fmt --check"
-"$cargo_bin" fmt --check
+"$cargo_bin" fmt --all --check
 
-echo "+ $cargo_bin clippy --all-targets --all-features -- -D warnings"
-"$cargo_bin" clippy --all-targets --all-features -- -D warnings
+echo "+ ./scripts/check_repo_constraints.sh"
+./scripts/check_repo_constraints.sh
 
-echo "+ $cargo_bin test"
-"$cargo_bin" test
+echo "+ $cargo_bin clippy --locked --all-targets --all-features -- -D warnings"
+"$cargo_bin" clippy --locked --all-targets --all-features -- -D warnings
+
+echo "+ $cargo_bin test --locked"
+"$cargo_bin" test --locked
+
+echo "+ RUSTDOCFLAGS=-D warnings $cargo_bin doc --locked --no-deps --document-private-items"
+RUSTDOCFLAGS="-D warnings" "$cargo_bin" doc --locked --no-deps --document-private-items

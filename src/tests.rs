@@ -1,5 +1,9 @@
-use super::*;
 use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
+use std::io;
+use std::path::PathBuf;
+
+use super::*;
 
 #[derive(Debug)]
 struct FakeRunner {
@@ -96,7 +100,7 @@ fn command_spec_derives_window_name_from_basename() -> Result<(), Box<dyn std::e
         [OsString::from("/usr/bin/printf"), OsString::from("ok")],
         PathBuf::from("/tmp"),
     )?;
-    assert_eq!(spec.window_name, "printf");
+    assert_eq!(spec.window_name(), "printf");
     Ok(())
 }
 
