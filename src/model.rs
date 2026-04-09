@@ -8,6 +8,7 @@ use thiserror::Error;
 /// Runtime options used by the library entry points.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RunOptions {
+    reuse_window: bool,
     socket_name: Option<SocketName>,
 }
 
@@ -22,7 +23,19 @@ impl RunOptions {
     pub fn with_socket_name(socket_name: impl Into<String>) -> Result<Self, ConfigError> {
         Ok(Self {
             socket_name: Some(SocketName::new(socket_name.into())?),
+            ..Self::default()
         })
+    }
+
+    /// Enables reuse of a previously tagged tmux window for the same command and working directory.
+    #[must_use]
+    pub fn with_reuse_window(mut self) -> Self {
+        self.reuse_window = true;
+        self
+    }
+
+    pub(crate) fn reuse_window(&self) -> bool {
+        self.reuse_window
     }
 
     pub(crate) fn socket_name(&self) -> Option<&str> {
@@ -174,7 +187,7 @@ impl SocketName {
 pub(crate) struct WindowId(String);
 
 impl WindowId {
-    fn parse(raw: &str) -> Result<Self, IntmuxError> {
+    pub(crate) fn parse(raw: &str) -> Result<Self, IntmuxError> {
         parse_tmux_id(raw, '@', "window id").map(Self)
     }
 
@@ -193,7 +206,7 @@ impl fmt::Display for WindowId {
 pub(crate) struct PaneId(String);
 
 impl PaneId {
-    fn parse(raw: &str) -> Result<Self, IntmuxError> {
+    pub(crate) fn parse(raw: &str) -> Result<Self, IntmuxError> {
         parse_tmux_id(raw, '%', "pane id").map(Self)
     }
 
@@ -215,6 +228,10 @@ pub(crate) struct CreateTarget {
 }
 
 impl CreateTarget {
+    pub(crate) fn new(pane_id: PaneId, window_id: WindowId) -> Self {
+        Self { pane_id, window_id }
+    }
+
     pub(crate) fn pane_id(&self) -> &PaneId {
         &self.pane_id
     }

@@ -34,6 +34,7 @@
 compile_error!("intmux currently supports Unix-like systems only.");
 
 mod model;
+mod reuse;
 mod tmux;
 
 #[cfg(test)]
@@ -50,6 +51,9 @@ pub(crate) use tmux::TmuxRunner;
 
 #[cfg(test)]
 pub(crate) use model::{parse_create_target, shell_quote};
+
+#[cfg(test)]
+pub(crate) use reuse::compute_reuse_key;
 
 #[cfg(test)]
 pub(crate) use tmux::ProcessOutput;
@@ -69,7 +73,12 @@ where
 {
     let cli = Cli::try_parse_from(args).map_err(|error| IntmuxError::Cli(error.to_string()))?;
     let cwd = env::current_dir().map_err(IntmuxError::CurrentDirectory)?;
-    launch_command(cli.command, cwd, options)
+    let run_options = if cli.reuse_window {
+        options.clone().with_reuse_window()
+    } else {
+        options.clone()
+    };
+    launch_command(cli.command, cwd, &run_options)
 }
 
 /// Launches a command into the `intmux` tmux session from the given directory.
@@ -106,6 +115,10 @@ fn launch_with_runner<R: TmuxRunner>(
     trailing_var_arg = true
 )]
 struct Cli {
+    /// Reuse a previously tagged tmux window for the same command and working directory.
+    #[arg(long)]
+    reuse_window: bool,
+
     /// Command to run inside tmux. `--` is optional and only needed to disambiguate.
     #[arg(
         required = true,

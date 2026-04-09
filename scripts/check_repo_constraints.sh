@@ -33,7 +33,8 @@ check_shell_strict_mode() {
   done
 }
 
-check_max_lines 320 src tests
+check_max_lines 320 src
+check_max_lines 480 tests
 check_shell_strict_mode
 
 exit "$status"

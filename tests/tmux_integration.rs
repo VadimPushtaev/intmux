@@ -10,6 +10,7 @@
 
 use std::error::Error;
 use std::ffi::OsString;
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -97,6 +98,121 @@ fn relative_paths_resolve_from_the_caller_directory() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+#[test]
+fn reuse_window_reuses_matching_command_and_cwd() -> Result<(), Box<dyn Error>> {
+    let harness = TmuxHarness::new()?;
+    let workspace = tempfile::tempdir()?;
+    let options = harness.options.clone().with_reuse_window();
+
+    launch_command(
+        [OsString::from("touch"), OsString::from("sticky-output")],
+        workspace.path().to_path_buf(),
+        &options,
+    )?;
+    wait_for_path(&workspace.path().join("sticky-output"))?;
+
+    let first_window_id = harness.window_id(0)?;
+    let reuse_key = harness.window_option_value(0, "@intmux.reuse-key-sha256")?;
+
+    launch_command(
+        [OsString::from("touch"), OsString::from("sticky-output")],
+        workspace.path().to_path_buf(),
+        &options,
+    )?;
+
+    assert_eq!(harness.window_count()?, 1);
+    assert_eq!(harness.window_id(0)?, first_window_id);
+    assert_eq!(reuse_key.len(), 64);
+    Ok(())
+}
+
+#[test]
+fn reuse_window_uses_different_windows_for_different_directories() -> Result<(), Box<dyn Error>> {
+    let harness = TmuxHarness::new()?;
+    let first_workspace = tempfile::tempdir()?;
+    let second_workspace = tempfile::tempdir()?;
+    let options = harness.options.clone().with_reuse_window();
+
+    launch_command(
+        [OsString::from("touch"), OsString::from("shared-name")],
+        first_workspace.path().to_path_buf(),
+        &options,
+    )?;
+    launch_command(
+        [OsString::from("touch"), OsString::from("shared-name")],
+        second_workspace.path().to_path_buf(),
+        &options,
+    )?;
+
+    wait_for_path(&first_workspace.path().join("shared-name"))?;
+    wait_for_path(&second_workspace.path().join("shared-name"))?;
+    assert_eq!(harness.window_count()?, 2);
+    Ok(())
+}
+
+#[test]
+fn reuse_window_falls_back_when_matching_window_is_busy() -> Result<(), Box<dyn Error>> {
+    let harness = TmuxHarness::new()?;
+    let workspace = tempfile::tempdir()?;
+    let options = harness.options.clone().with_reuse_window();
+
+    launch_command(
+        [OsString::from("touch"), OsString::from("busy-target")],
+        workspace.path().to_path_buf(),
+        &options,
+    )?;
+    wait_for_path(&workspace.path().join("busy-target"))?;
+
+    let first_window_id = harness.window_id(0)?;
+    harness.send_literal_command(0, "sleep 5")?;
+    harness.wait_for_pane_command(0, "sleep")?;
+
+    launch_command(
+        [OsString::from("touch"), OsString::from("busy-target")],
+        workspace.path().to_path_buf(),
+        &options,
+    )?;
+
+    assert_eq!(harness.window_count()?, 2);
+    assert_eq!(
+        harness.window_option_value_by_id(&first_window_id, "@intmux.reuse-key-sha256")?,
+        ""
+    );
+    assert_ne!(harness.window_id(1)?, first_window_id);
+    Ok(())
+}
+
+#[test]
+fn reuse_window_resets_shell_cwd_before_reuse() -> Result<(), Box<dyn Error>> {
+    let harness = TmuxHarness::new()?;
+    let workspace = tempfile::tempdir()?;
+    let options = harness.options.clone().with_reuse_window();
+    let file_name = format!("sticky-relative-{}", unique_socket_name()?);
+    let target = workspace.path().join(&file_name);
+    let tmp_target = Path::new("/tmp").join(&file_name);
+    let _ignored = fs::remove_file(&tmp_target);
+
+    launch_command(
+        [OsString::from("touch"), OsString::from(&file_name)],
+        workspace.path().to_path_buf(),
+        &options,
+    )?;
+    wait_for_path(&target)?;
+    fs::remove_file(&target)?;
+
+    harness.send_literal_command(0, "cd /tmp")?;
+    launch_command(
+        [OsString::from("touch"), OsString::from(&file_name)],
+        workspace.path().to_path_buf(),
+        &options,
+    )?;
+
+    wait_for_path(&target)?;
+    assert_eq!(harness.window_count()?, 1);
+    assert!(!tmp_target.exists());
+    Ok(())
+}
+
 struct TmuxHarness {
     options: RunOptions,
     socket_name: String,
@@ -135,9 +251,33 @@ impl TmuxHarness {
         self.tmux_stdout(["show-options", "-w", "-t", &window_id, option])
     }
 
+    fn window_option_value(&self, index: usize, option: &str) -> Result<String, Box<dyn Error>> {
+        let window_id = self.window_id(index)?;
+        self.window_option_value_by_id(&window_id, option)
+    }
+
+    fn window_option_value_by_id(
+        &self,
+        window_id: &str,
+        option: &str,
+    ) -> Result<String, Box<dyn Error>> {
+        self.tmux_stdout(["show-options", "-qwv", "-t", window_id, option])
+    }
+
     fn pane_dead(&self, index: usize) -> Result<String, Box<dyn Error>> {
         let pane_id = self.pane_id(index)?;
         self.tmux_stdout(["display-message", "-p", "-t", &pane_id, "#{pane_dead}"])
+    }
+
+    fn pane_current_command(&self, index: usize) -> Result<String, Box<dyn Error>> {
+        let pane_id = self.pane_id(index)?;
+        self.tmux_stdout([
+            "display-message",
+            "-p",
+            "-t",
+            &pane_id,
+            "#{pane_current_command}",
+        ])
     }
 
     fn send_literal_command(&self, index: usize, command: &str) -> Result<(), Box<dyn Error>> {
@@ -145,6 +285,17 @@ impl TmuxHarness {
         self.tmux_success(["send-keys", "-t", &pane_id, "-l", command])?;
         self.tmux_success(["send-keys", "-t", &pane_id, "C-m"])?;
         Ok(())
+    }
+
+    fn wait_for_pane_command(&self, index: usize, command: &str) -> Result<(), Box<dyn Error>> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if self.pane_current_command(index)? == command {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Err(format!("timed out waiting for pane command {command}").into())
     }
 
     fn window_id(&self, index: usize) -> Result<String, Box<dyn Error>> {
